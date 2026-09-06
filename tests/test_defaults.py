@@ -183,12 +183,17 @@ def test_base_url_without_http_scheme_falls_back_to_default(raw):
 def test_client_search_url_uses_base_url(monkeypatch):
     monkeypatch.setattr(easynews_client, "EASYNEWS_BASE", "https://example.test")
     session = FakeSession(payload={"data": []})
-    client = easynews_client.EasynewsClient("u", "p", session=session)
+    client = easynews_client.EasynewsClient("u", "p", session=session, api_version="3.0")
     client.search("foo")
     method, url = session.calls[-1]
     assert method == "GET"
-    assert url.startswith("https://example.test/2.0/search/solr-search/?")
+    assert url.startswith("https://example.test/3.0/api/search")
     assert "members.easynews.com" not in url
+
+    legacy = easynews_client.EasynewsClient("u", "p", session=session, api_version="2.0")
+    legacy.search("foo")
+    _, url = session.calls[-1]
+    assert url.startswith("https://example.test/2.0/search/solr-search/?")
 
 
 def test_client_login_and_download_urls_use_base_url(monkeypatch, tmp_path):
@@ -308,7 +313,7 @@ def _docker_cmd():
 
 
 @pytest.mark.parametrize("raw,expected", [
-    (None, "4"), ("", "4"), ("abc", "4"), ("0", "4"), ("-2", "4"), ("2", "2"), ("12", "12"),
+    (None, "1"), ("", "1"), ("abc", "1"), ("0", "1"), ("-2", "1"), ("2", "2"), ("12", "12"),
 ])
 def test_dockerfile_cmd_falls_back_on_invalid_worker_count(raw, expected):
     cmd = _docker_cmd()
@@ -321,3 +326,17 @@ def test_dockerfile_cmd_falls_back_on_invalid_worker_count(raw, expected):
     result = subprocess.run(["sh", "-c", script], env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert f"--workers {expected} " in result.stdout
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (None, "8"), ("", "8"), ("abc", "8"), ("0", "8"), ("4", "4"),
+])
+def test_dockerfile_cmd_threads_default_and_fallback(raw, expected):
+    cmd = _docker_cmd()
+    script = cmd[2].replace("gunicorn ", "echo ")
+    env = {"PATH": os.environ["PATH"], "PORT": "8081"}
+    if raw is not None:
+        env["GUNICORN_THREADS"] = raw
+    result = subprocess.run(["sh", "-c", script], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert f"--threads {expected} " in result.stdout

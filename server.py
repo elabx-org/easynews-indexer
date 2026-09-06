@@ -443,6 +443,22 @@ def _sanitize_phrase(text: str) -> str:
     return working.lower().strip()
 
 
+_SAMPLE_TOKEN_RE = re.compile(r"(?:^|[\s._\-\[(])sample(?=$|[\s._\-\])])", re.IGNORECASE)
+
+
+def _is_sample_name(name: str) -> bool:
+    """True for sample clips: a "sample" token that prefixes the name or sits in
+    its second half ("...-sample", "...edith.sample", "sample-<release>").
+    A title that merely contains the word early on (Free.Sample.Kings) is kept."""
+    if not name:
+        return False
+    m = _SAMPLE_TOKEN_RE.search(name)
+    if not m:
+        return False
+    start = m.start() + (0 if m.start() == 0 else 1)
+    return start == 0 or start >= len(name) // 2
+
+
 def _is_flagged_item(item: Any, ext: str, duration_seconds: Optional[int]) -> bool:
     passwd = False
     virus = False
@@ -687,16 +703,18 @@ def filter_and_map(
         elif isinstance(it, dict):
             hash_id = it.get("hash") or it.get("0") or it.get("id")
             subject = it.get("subject") or it.get("6")
-            filename_no_ext = it.get("filename") or it.get("10")
-            ext = it.get("ext") or it.get("11")
+            filename_no_ext = it.get("filename") or it.get("10") or it.get("fn")
+            ext = it.get("ext") or it.get("11") or it.get("extension")
             size = it.get("size", 0)
             poster = it.get("poster") or it.get("7")
             posted_raw = it.get("timestamp") or it.get("ts") or it.get("dtime") or it.get("date") or it.get("12")
             sig = it.get("sig")
             display_fn = it.get("fn") or it.get("filename")
             extension_field = it.get("extension") or it.get("ext")
-            duration_raw = it.get("14") or it.get("duration") or it.get("len")
+            duration_raw = it.get("14") or it.get("runtime") or it.get("duration") or it.get("len")
             fullres = it.get("fullres") or it.get("resolution")
+            if not fullres and it.get("xres") and it.get("yres"):
+                fullres = f"{it.get('xres')} x {it.get('yres')}"
 
         if not hash_id or not ext:
             continue
@@ -719,6 +737,8 @@ def filter_and_map(
         duration_seconds = _parse_duration_seconds(duration_raw)
 
         if _is_flagged_item(it, ext, duration_seconds):
+            continue
+        if _is_sample_name(display_fn or filename_no_ext or ""):
             continue
 
         title: Optional[str] = None

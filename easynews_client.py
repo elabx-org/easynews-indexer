@@ -12,6 +12,7 @@ You'll need a valid Easynews account. Use responsibly and per Easynews TOS.
 from __future__ import annotations
 
 import base64
+import threading
 import logging
 import os
 from dataclasses import dataclass
@@ -44,6 +45,40 @@ EASYNEWS_BASE = _base_url_from_env()
 
 _LOGIN_TIMEOUT = 15
 _SEARCH_TIMEOUT = 30
+
+# The 3.0 endpoint always returns 100 items per page and ignores page-size params.
+_V3_PAGE_SIZE = 100
+
+
+def _api_version_from_env() -> str:
+    """EASYNEWS_API_VERSION: "3.0" (default) or "2.0"; anything else -> 3.0."""
+    raw = (os.environ.get("EASYNEWS_API_VERSION") or "").strip()
+    return raw if raw in ("2.0", "3.0") else "3.0"
+
+
+def _max_concurrent_from_env() -> int:
+    """EASYNEWS_MAX_CONCURRENT_SEARCHES: positive int, default 2.
+
+    Easynews allows at most two concurrent searches per account on the 2.0
+    endpoint and answers over-cap requests with an empty body; 3.0 allows
+    about ten but shares the counter. 2 is safe for either.
+    """
+    raw = (os.environ.get("EASYNEWS_MAX_CONCURRENT_SEARCHES") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 2
+    return value if value > 0 else 2
+
+
+def _make_search_semaphore(n: int) -> threading.BoundedSemaphore:
+    return threading.BoundedSemaphore(n)
+
+
+# Process-wide: caps in-flight Easynews searches for this account. Only
+# effective across threads of one process, so run one gunicorn worker with
+# threads (see Dockerfile) rather than several worker processes.
+_SEARCH_SEMAPHORE = _make_search_semaphore(_max_concurrent_from_env())
 _DOWNLOAD_TIMEOUT = 60
 
 
@@ -75,10 +110,15 @@ class SearchItem:
 
 class EasynewsClient:
     def __init__(
-        self, username: str, password: str, session: Optional[requests.Session] = None
+        self,
+        username: str,
+        password: str,
+        session: Optional[requests.Session] = None,
+        api_version: Optional[str] = None,
     ):
         self.username = username
         self.password = password
+        self.api_version = api_version if api_version in ("2.0", "3.0") else _api_version_from_env()
         self.s = session or requests.Session()
         # Default headers
         self.s.headers.update(
@@ -118,10 +158,84 @@ class EasynewsClient:
         sort_dir: str = "-",
         safe_off: int = 0,
     ) -> Dict[str, Any]:
+        """Search Easynews; returns the raw JSON dict (data + pagination fields).
+
+        Uses the 3.0 API by default (fixed 100 items/page, so per_page > 100
+        fetches and merges several pages). EASYNEWS_API_VERSION=2.0 selects the
+        legacy Solr endpoint. Every request goes through the account-wide
+        concurrency semaphore.
         """
-        Call the same Solr-backed endpoint used by the site.
-        Returns the raw JSON dict, including data and pagination fields.
-        """
+        if self.api_version == "3.0":
+            return self._search_v3(query, file_type, page, per_page, sort_field, sort_dir, safe_off)
+        with _SEARCH_SEMAPHORE:
+            return self._search_v2(query, file_type, page, per_page, sort_field, sort_dir, safe_off)
+
+    def _search_v3(
+        self,
+        query: str,
+        file_type: str,
+        page: int,
+        per_page: int,
+        sort_field: Optional[str],
+        sort_dir: str,
+        safe_off: int,
+    ) -> Dict[str, Any]:
+        if file_type != "VIDEO":
+            file_type = "VIDEO"
+        wanted_pages = max(1, -(-max(1, per_page) // _V3_PAGE_SIZE))  # ceil
+        merged: Optional[Dict[str, Any]] = None
+        seen: set = set()
+        pno = max(1, page)
+        for _ in range(wanted_pages):
+            params = {
+                "gps": query,
+                "pno": str(pno),
+                "u": "1",
+                "safeO": str(safe_off),
+                "fty[]": file_type,
+            }
+            if sort_field:
+                params["s1"] = sort_field
+                params["s1d"] = sort_dir
+            url = f"{EASYNEWS_BASE}/3.0/api/search"
+            try:
+                with _SEARCH_SEMAPHORE:
+                    r = self.s.get(url, params=params, timeout=_SEARCH_TIMEOUT)
+                r.raise_for_status()
+                if not r.text:
+                    raise EasynewsError("Easynews returned an empty response (over the concurrency cap?)")
+                j = r.json()
+            except RequestException as e:
+                raise EasynewsError(f"Search request failed: {e}") from e
+            except ValueError as e:
+                raise EasynewsError(f"Invalid JSON from Easynews: {e}") from e
+            if merged is None:
+                merged = dict(j)
+                merged["data"] = []
+            for it in j.get("data") or []:
+                key = it.get("hash") if isinstance(it, dict) else None
+                if key and key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                merged["data"].append(it)
+            num_pages = int(j.get("numPages") or 1)
+            if pno >= num_pages:
+                break
+            pno += 1
+        return merged or {"data": []}
+
+    def _search_v2(
+        self,
+        query: str,
+        file_type: str = "VIDEO",
+        page: int = 1,
+        per_page: int = 50,
+        sort_field: Optional[str] = "dtime",
+        sort_dir: str = "-",
+        safe_off: int = 0,
+    ) -> Dict[str, Any]:
+        """Legacy 2.0 Solr endpoint (the same one the website uses)."""
         if file_type != "VIDEO":
             # Enforce VIDEO only as requested
             file_type = "VIDEO"
