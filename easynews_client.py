@@ -232,6 +232,46 @@ class EasynewsClient:
             pno += 1
         return merged or {"data": []}
 
+    def search_window(
+        self,
+        query: str,
+        d1: str,
+        d2: str,
+        page: int = 1,
+        per_page: int = 250,
+    ) -> Dict[str, Any]:
+        """2.0 search restricted to a posting-date window (d1..d2 as
+        "YYYY-MM-DD HH:MM:SS"), largest files first. Used by the sibling pivot;
+        the 2.0 endpoint is the one known to honour d1/d2."""
+        params = {
+            "fly": "2",
+            "sb": "1",
+            "pno": str(max(1, page)),
+            "pby": str(per_page),
+            "u": "1",
+            "chxu": "1",
+            "chxgx": "1",
+            "st": "adv",
+            "gps": query,
+            "vv": "1",
+            "safeO": "0",
+            "s1": "dsize",
+            "s1d": "-",
+            "d1": d1,
+            "d2": d2,
+        }
+        qs = "&".join(f"{k}={requests.utils.quote(str(v))}" for k, v in params.items()) + "&fty%5B%5D=VIDEO"
+        url = f"{EASYNEWS_BASE}/2.0/search/solr-search/?{qs}"
+        try:
+            with _SEARCH_SEMAPHORE:
+                r = self.s.get(url, timeout=_SEARCH_TIMEOUT)
+            r.raise_for_status()
+            return r.json()
+        except RequestException as e:
+            raise EasynewsError(f"Window search failed: {e}") from e
+        except ValueError as e:
+            raise EasynewsError(f"Invalid JSON from Easynews: {e}") from e
+
     def _search_v2(
         self,
         query: str,

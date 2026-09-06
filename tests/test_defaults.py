@@ -306,6 +306,28 @@ def test_default_limit_is_capped_at_upstream_page_size():
     assert "DEFAULT_LIMIT" in result.stderr
 
 
+def test_upstream_page_size_is_configurable_and_lifts_the_limit_cap():
+    result = _run_isolated(
+        "import server; print(server.DEFAULT_LIMIT, server.UPSTREAM_PAGE_SIZE)",
+        MAX_RESULTS="500", DEFAULT_LIMIT="500",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["500", "500"]
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (None, "250"), ("", "250"), ("abc", "250"), ("0", "250"), ("50", "100"), ("500", "500"), ("5000", "1000"),
+])
+def test_max_results_env_parsing_and_bounds(raw, expected):
+    # MAX_RESULTS: default 250, floor 100, ceiling 1000.
+    result = _run_isolated(
+        "import server; print(server.UPSTREAM_PAGE_SIZE)",
+        MAX_RESULTS=raw,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == expected
+
+
 # --- GUNICORN_WORKERS (Dockerfile CMD) ---------------------------------------------------
 
 def _docker_cmd():

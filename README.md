@@ -61,7 +61,8 @@ Invalid values are ignored with a warning and the default is used.
 | `PORT` | `8081` | Listen port |
 | `EASYNEWS_BASE_URL` | `https://members.easynews.com` | Easynews host used for login, search and NZB download; must start with `http://` or `https://`; trailing slash stripped |
 | `DEFAULT_MIN_SIZE_MB` | `100` | Minimum file size in MB: the default when `?minsize=` is absent, and the floor for any `?minsize=` value |
-| `DEFAULT_LIMIT` | `100` | Results returned when `?limit=` is absent and the hard maximum for `?limit=`; advertised as `max`/`default` in caps `<limits>`. Capped at 250, the number of results fetched from Easynews per search |
+| `MAX_RESULTS` | `250` | Results fetched from Easynews per search and the ceiling for `DEFAULT_LIMIT` (bounded 100-1000). On the 3.0 API this fetches `ceil(MAX_RESULTS/100)` pages, so 500 costs 5 page requests per search. Raise for NZBgeek-level volume. |
+| `DEFAULT_LIMIT` | `100` | Results returned when `?limit=` is absent and the hard maximum for `?limit=`; advertised as `max`/`default` in caps `<limits>`. Capped at `MAX_RESULTS`. |
 | `STRICT_MATCHING` | `1` | Strict title matching for `t=movie` / `t=tvsearch` (`0` to disable) |
 | `EASYNEWS_API_VERSION` | `3.0` | Search API. `3.0` (fixed 100 items/page, richer fields, ~10 concurrent searches) ranks by relevance as long as no sort parameter is sent (sending `s1=relevance` silently switches it to filename order). `2.0` is the legacy Solr endpoint. |
 | `EASYNEWS_MAX_CONCURRENT_SEARCHES` | `2` | In-flight search cap per process. Easynews allows 2 on 2.0 (about 10 on 3.0) per account and returns empty bodies over the cap. |

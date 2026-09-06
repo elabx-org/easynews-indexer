@@ -38,6 +38,7 @@ def _load_dotenv():
 _load_dotenv()
 
 import easynews_client  # noqa: E402
+import pivot  # noqa: E402
 from easynews_client import EasynewsClient, EasynewsError, SearchItem  # noqa: E402
 
 
@@ -77,6 +78,83 @@ def _env_int(name: str, default: int, minimum: int = 0) -> int:
     return value
 
 
+# Sibling pivot: recover obfuscated full releases from readable sample clips
+# (see pivot.py). Bounded per search by PIVOT_BUDGET_SECONDS; results are
+# cached per sample so repeated arr searches do not rescan.
+SIBLING_PIVOT = _env_bool("SIBLING_PIVOT", True)
+PIVOT_BUDGET_SECONDS = _env_int("PIVOT_BUDGET_SECONDS", 20, minimum=0)
+PIVOT_CACHE_TTL_SECONDS = _env_int("PIVOT_CACHE_TTL_SECONDS", 6 * 3600, minimum=60)
+PIVOT_SEED_MIN_BYTES = 5 * 1024 * 1024
+_PIVOT_CACHE: Dict[str, Tuple[float, List[dict]]] = {}
+_PIVOT_CACHE_LOCK = threading.Lock()
+
+
+def _pivot_cache_clear() -> None:
+    with _PIVOT_CACHE_LOCK:
+        _PIVOT_CACHE.clear()
+
+
+def _pivot_backend() -> Any:
+    return pivot.EasynewsPivotBackend(client(), easynews_client.EASYNEWS_BASE)
+
+
+def _run_pivot(seed_items: List[dict]) -> List[dict]:
+    """seed_items are raw Easynews sample records. Returns confirmed siblings as
+    filter_and_map-shaped result dicts, served from the per-seed cache when fresh."""
+    now = _now()
+    todo: List[dict] = []
+    found: List[dict] = []
+    with _PIVOT_CACHE_LOCK:
+        for raw in seed_items:
+            h = str(raw.get("hash") or raw.get("0") or "")
+            entry = _PIVOT_CACHE.get(h)
+            if entry is not None and now < entry[0]:
+                found.extend(entry[1])
+            else:
+                todo.append(raw)
+    if todo and PIVOT_BUDGET_SECONDS > 0:
+        results = pivot.pivot_from_samples(todo, _pivot_backend(), budget_s=PIVOT_BUDGET_SECONDS)
+        by_seed: Dict[str, List[dict]] = {}
+        for r in results:
+            by_seed.setdefault(r["pivot_seed"], []).append(r)
+        with _PIVOT_CACHE_LOCK:
+            for raw in todo:
+                h = str(raw.get("hash") or raw.get("0") or "")
+                _PIVOT_CACHE[h] = (now + PIVOT_CACHE_TTL_SECONDS, by_seed.get(h, []))
+        found.extend(results)
+    return [_pivot_result_to_item(r) for r in found]
+
+
+def _pivot_result_to_item(r: dict) -> dict:
+    title = r["title"]
+    raw = r.get("raw") or {}
+    fullres = raw.get("fullres")
+    if not fullres and raw.get("width") and raw.get("height"):
+        fullres = f"{raw.get('width')} x {raw.get('height')}"
+    quality = _extract_quality(title, fullres)
+    meta = _extract_release_markers(title, quality)
+    if not quality and meta.get("quality"):
+        quality = meta.get("quality")
+    return {
+        "hash": r["hash"],
+        "filename": r["filename"],
+        "ext": r["ext"],
+        "sig": r.get("sig"),
+        "size": r["size"],
+        "title": title,
+        "poster": raw.get("poster") or raw.get("7"),
+        "posted": r.get("posted"),
+        "duration": r.get("runtime"),
+        "duration_hms": _format_duration(r.get("runtime")),
+        "quality": quality,
+        "thumbnail": None,
+        "year": meta.get("year"),
+        "season": meta.get("season"),
+        "episode": meta.get("episode"),
+        "pivot": True,
+    }
+
+
 # Default strictness for t=movie / t=tvsearch (plain t=search is never strict
 # by default). Per-request ?strict=0|1 always wins.
 STRICT_MATCHING_DEFAULT = _env_bool("STRICT_MATCHING", True)
@@ -86,7 +164,10 @@ STRICT_MATCHING_DEFAULT = _env_bool("STRICT_MATCHING", True)
 DEFAULT_MIN_SIZE_MB = _env_int("DEFAULT_MIN_SIZE_MB", 100)
 
 # Results requested from Easynews per search; nothing beyond this can be returned.
-UPSTREAM_PAGE_SIZE = 250
+# Results fetched from Easynews per search and the hard ceiling for ?limit=.
+# On 3.0 (100 items/page) this fetches ceil(MAX_RESULTS/100) pages, so larger
+# values cost proportionally more upstream page requests. Bounded to [100,1000].
+UPSTREAM_PAGE_SIZE = min(1000, max(100, _env_int("MAX_RESULTS", 250, minimum=1)))
 
 # Result count when ?limit= is absent and the hard maximum for ?limit=; also
 # advertised as max/default in caps <limits>. Capped at UPSTREAM_PAGE_SIZE so
@@ -662,7 +743,14 @@ def _detect_category(
     return CATEGORY_MOVIES  # 2000
 
 
+_STRICT_MARKER_RE = re.compile(r"^(?:s\d{1,2}(?:e\d{1,4})?|(?:19|20)\d{2})$", re.IGNORECASE)
+
+
 def _matches_strict(title: str, strict_phrase: Optional[str]) -> bool:
+    """The query's title words must appear contiguously in the release name.
+    Trailing markers the bridge appends to the query (SxxEyy / Sxx / year)
+    must appear anywhere after the title; a year marker is optional because
+    many names omit it (year conflicts are handled by query_meta)."""
     if not strict_phrase:
         return True
     candidate = _sanitize_phrase(title)
@@ -674,10 +762,25 @@ def _matches_strict(title: str, strict_phrase: Optional[str]) -> bool:
     phrase_tokens = strict_phrase.split()
     if not phrase_tokens:
         return True
+
+    markers: List[str] = []
+    while phrase_tokens and _STRICT_MARKER_RE.match(phrase_tokens[-1]) and len(phrase_tokens) > 1:
+        markers.insert(0, phrase_tokens.pop())
+
+    title_end = -1
     for idx in range(0, max(1, len(candidate_tokens) - len(phrase_tokens) + 1)):
         if candidate_tokens[idx : idx + len(phrase_tokens)] == phrase_tokens:
-            return True
-    return False
+            title_end = idx + len(phrase_tokens)
+            break
+    if title_end < 0:
+        return False
+    tail = candidate_tokens[title_end:]
+    for marker in markers:
+        if _YEAR_RE.fullmatch(marker):
+            continue  # optional
+        if marker not in tail:
+            return False
+    return True
 
 
 def filter_and_map(
@@ -687,7 +790,10 @@ def filter_and_map(
     query_meta: Optional[Dict[str, Optional[Any]]] = None,
     strict_phrase: Optional[str] = None,
     strict_match: bool = False,
+    sample_mode: str = "drop",
 ) -> List[dict]:
+    """sample_mode: "drop" (default) removes sample clips; "only" returns the raw
+    records of sample clips that pass every other filter (pivot seeds)."""
     token_set: Set[str] = set(query_tokens or [])
     thumb_base = json_data.get("thumbURL") or json_data.get("thumbUrl")
     out: List[dict] = []
@@ -755,7 +861,11 @@ def filter_and_map(
 
         if _is_flagged_item(it, ext, duration_seconds):
             continue
-        if _is_sample_name(display_fn or filename_no_ext or ""):
+        is_sample = _is_sample_name(display_fn or filename_no_ext or "")
+        if sample_mode == "only":
+            if not is_sample:
+                continue
+        elif is_sample:
             continue
 
         title: Optional[str] = None
@@ -804,6 +914,10 @@ def filter_and_map(
             title_tokens = set(_tokenize(title))
             if not title_tokens or not token_set.issubset(title_tokens):
                 continue
+
+        if sample_mode == "only":
+            out.append(it)
+            continue
 
         duration_formatted = _format_duration(duration_seconds)
         thumbnail_url = _build_thumbnail_url(thumb_base, hash_id, filename_no_ext)
@@ -1013,6 +1127,25 @@ def api():
                     strict_phrase=strict_phrase,
                     strict_match=strict_requested,
                 )
+                if SIBLING_PIVOT:
+                    try:
+                        seeds = filter_and_map(
+                            data,
+                            min_bytes=PIVOT_SEED_MIN_BYTES,
+                            query_tokens=query_tokens,
+                            query_meta=query_meta,
+                            strict_phrase=strict_phrase,
+                            strict_match=strict_requested,
+                            sample_mode="only",
+                        )
+                        if seeds:
+                            have = {it["hash"] for it in items}
+                            for extra in _run_pivot(seeds):
+                                if extra["hash"] not in have:
+                                    have.add(extra["hash"])
+                                    items.append(extra)
+                    except Exception:
+                        logger.warning("sibling pivot failed; returning direct results only", exc_info=True)
 
         # Trim by limit (handles fallback and real queries)
         items = items[offset : offset + limit]
