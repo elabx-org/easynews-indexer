@@ -747,7 +747,7 @@ def api():
             anime_categories = {"5070"}
             requested_categories = set(cat_param.split(",")) if cat_param else set()
             wants_tv = t == "tvsearch" or bool(requested_categories & tv_categories)
-            wants_anime = bool(requested_categories & anime_categories)
+            wants_anime = bool(requested_categories & anime_categories) and not wants_tv
             # Use appropriate fallback query
             if wants_anime:
                 q = "one piece"  # Anime fallback
@@ -791,7 +791,7 @@ def api():
             anime_categories = {"5070"}
             requested_categories = set(cat_param.split(",")) if cat_param else set()
             wants_tv = t == "tvsearch" or bool(requested_categories & tv_categories)
-            wants_anime = bool(requested_categories & anime_categories)
+            wants_anime = bool(requested_categories & anime_categories) and not wants_tv
 
             if wants_anime:
                 # Anime-appropriate fallback
@@ -804,6 +804,7 @@ def api():
                         "size": 350 * 1024 * 1024,
                         "title": "[SampleSubs] Sample Anime Series - 01 [720p]",
                         "sample": True,
+                        "category": CATEGORY_ANIME,
                         "poster": "sample@example.com",
                         "posted": int(time.time()),
                     }
@@ -819,6 +820,7 @@ def api():
                         "size": 800 * 1024 * 1024,
                         "title": "Sample TV Show S01E01 1080p",
                         "sample": True,
+                        "category": CATEGORY_TV_HD,
                         "poster": "sample@example.com",
                         "posted": int(time.time()),
                     }
@@ -834,6 +836,7 @@ def api():
                         "size": 700 * 1024 * 1024,
                         "title": "Sample Matrix Clip",
                         "sample": True,
+                        "category": CATEGORY_MOVIES_HD,
                         "poster": "sample@example.com",
                         "posted": int(time.time()),
                     }
@@ -904,7 +907,7 @@ def api():
                 "year": year,
                 "quality": quality,
             }
-            category_id = _detect_category(title_text, title_metadata)
+            category_id = it.get("category") or _detect_category(title_text, title_metadata)
 
             attr_parts = [
                 f'<newznab:attr name="size" value="{size}"/>',
