@@ -51,9 +51,16 @@ _V3_PAGE_SIZE = 100
 
 
 def _api_version_from_env() -> str:
-    """EASYNEWS_API_VERSION: "3.0" (default) or "2.0"; anything else -> 3.0."""
+    """EASYNEWS_API_VERSION: "2.0" (default) or "3.0"; anything else -> 2.0.
+
+    2.0 is the default because its relevance ranking is far better for
+    title-based searches: measured on the same queries, 3.0 returned
+    "One Piece" results with 0 anime-classified titles in the first 300 (2.0:
+    231/250) and only 17 title matches for "the bear s03e01" (2.0: 98). 3.0
+    appears to ignore the s1=relevance sort.
+    """
     raw = (os.environ.get("EASYNEWS_API_VERSION") or "").strip()
-    return raw if raw in ("2.0", "3.0") else "3.0"
+    return raw if raw in ("2.0", "3.0") else "2.0"
 
 
 def _max_concurrent_from_env() -> int:
@@ -160,9 +167,10 @@ class EasynewsClient:
     ) -> Dict[str, Any]:
         """Search Easynews; returns the raw JSON dict (data + pagination fields).
 
-        Uses the 3.0 API by default (fixed 100 items/page, so per_page > 100
-        fetches and merges several pages). EASYNEWS_API_VERSION=2.0 selects the
-        legacy Solr endpoint. Every request goes through the account-wide
+        Uses the 2.0 Solr endpoint by default (best relevance ranking).
+        EASYNEWS_API_VERSION=3.0 selects the newer API (fixed 100 items/page,
+        so per_page > 100 fetches and merges several pages; richer fields but
+        poor ranking). Every request goes through the account-wide
         concurrency semaphore.
         """
         if self.api_version == "3.0":

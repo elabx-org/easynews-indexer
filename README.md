@@ -7,8 +7,8 @@
 > categories (so Sonarr's add-time test passes through Prowlarr), context-aware anime
 > detection, a working `STRICT_MATCHING` env var, a keyless `GET /health`, a short-TTL
 > search-result cache (`CACHE_TTL_SECONDS`), and configurable defaults (`EASYNEWS_BASE_URL`,
-> `DEFAULT_MIN_SIZE_MB`, `DEFAULT_LIMIT`, `GUNICORN_WORKERS`), the Easynews 3.0 search API with an
-> account-wide concurrency cap, and sample-clip filtering.
+> `DEFAULT_MIN_SIZE_MB`, `DEFAULT_LIMIT`, `GUNICORN_WORKERS`), an account-wide Easynews search
+> concurrency cap, optional Easynews 3.0 API support, and sample-clip filtering.
 
 Flask server that bridges Easynews search to a Newznab-like API so you can add it to Prowlarr as a custom indexer and download NZBs. Video-only, sorts by relevance, returns as many results as possible, and filters files smaller than `DEFAULT_MIN_SIZE_MB` (100 MB by default).
 
@@ -63,7 +63,7 @@ Invalid values are ignored with a warning and the default is used.
 | `DEFAULT_MIN_SIZE_MB` | `100` | Minimum file size in MB: the default when `?minsize=` is absent, and the floor for any `?minsize=` value |
 | `DEFAULT_LIMIT` | `100` | Results returned when `?limit=` is absent and the hard maximum for `?limit=`; advertised as `max`/`default` in caps `<limits>`. Capped at 250, the number of results fetched from Easynews per search |
 | `STRICT_MATCHING` | `1` | Strict title matching for `t=movie` / `t=tvsearch` (`0` to disable) |
-| `EASYNEWS_API_VERSION` | `3.0` | Search API: `3.0` (fixed 100 items/page, richer fields) or `2.0` (legacy Solr endpoint). |
+| `EASYNEWS_API_VERSION` | `2.0` | Search API. `2.0` (Solr) ranks by relevance properly; `3.0` (fixed 100 items/page, richer fields) ignores the relevance sort and buries real matches under old rips, so it is opt-in only. |
 | `EASYNEWS_MAX_CONCURRENT_SEARCHES` | `2` | In-flight search cap per process. Easynews allows 2 on 2.0 (about 10 on 3.0) per account and returns empty bodies over the cap. |
 | `GUNICORN_THREADS` | `8` | Threads per worker (Docker image). Keep `GUNICORN_WORKERS=1` so the search cap applies account-wide. |
 | `GUNICORN_WORKERS` | `1` | Gunicorn worker processes (Docker image only); a non-positive or non-integer value falls back to 1. Keep at 1 so the Easynews search cap applies account-wide. |

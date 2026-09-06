@@ -63,12 +63,12 @@ def qs(url):
 
 # --- endpoint selection ---------------------------------------------------------
 
-def test_default_api_version_is_3(monkeypatch):
+def test_default_api_version_is_2(monkeypatch):
     monkeypatch.delenv("EASYNEWS_API_VERSION", raising=False)
-    assert easynews_client._api_version_from_env() == "3.0"
+    assert easynews_client._api_version_from_env() == "2.0"
 
 
-@pytest.mark.parametrize("raw,expected", [("2.0", "2.0"), ("3.0", "3.0"), ("bogus", "3.0"), ("", "3.0")])
+@pytest.mark.parametrize("raw,expected", [("2.0", "2.0"), ("3.0", "3.0"), ("bogus", "2.0"), ("", "2.0")])
 def test_api_version_env_parsing(monkeypatch, raw, expected):
     monkeypatch.setenv("EASYNEWS_API_VERSION", raw)
     assert easynews_client._api_version_from_env() == expected
