@@ -48,6 +48,24 @@ EZ_USER = os.environ.get("EASYNEWS_USER")
 EZ_PASS = os.environ.get("EASYNEWS_PASS")
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+# Default strictness for t=movie / t=tvsearch (plain t=search is never strict
+# by default). Per-request ?strict=0|1 always wins.
+STRICT_MATCHING_DEFAULT = _env_bool("STRICT_MATCHING", True)
+
+
+def _strict_requested(t: str, strict_param: Optional[str]) -> bool:
+    if strict_param is not None:
+        return strict_param.strip().lower() not in {"0", "false", "no", "off"}
+    return STRICT_MATCHING_DEFAULT and t in {"movie", "tvsearch"}
+
+
 def require_apikey() -> bool:
     key = request.args.get("apikey") or request.headers.get("X-Api-Key")
     return (API_KEY is None) or (key == API_KEY)
@@ -650,6 +668,12 @@ def filter_and_map(
     return out
 
 
+@APP.route("/health")
+def health():
+    # Liveness only: no Easynews call, no API key, safe for container healthchecks.
+    return {"status": "ok"}, 200
+
+
 @APP.route("/api")
 def api():
     if not require_apikey():
@@ -744,15 +768,7 @@ def api():
             query_meta["season"] = season_int
         if episode_int is not None:
             query_meta["episode"] = episode_int
-        strict_param = request.args.get("strict")
-        strict_requested = t in {"movie", "tvsearch"}
-        if strict_param is not None:
-            strict_requested = strict_param.strip().lower() not in {
-                "0",
-                "false",
-                "no",
-                "off",
-            }
+        strict_requested = _strict_requested(t, request.args.get("strict"))
         strict_phrase = _sanitize_phrase(raw_query) if strict_requested else None
         limit = int(request.args.get("limit", "100"))
         offset = int(request.args.get("offset", "0"))

@@ -2,6 +2,11 @@
 
 # Easynews Newznab-like server
 
+> **elabx-org fork.** Maintained independently of upstream. Built and deployed by Komodo as
+> `ghcr.io/elabx-org/easynews-indexer`. Changes vs upstream: sample items carry explicit
+> categories (so Sonarr's add-time test passes through Prowlarr), context-aware anime
+> detection, a working `STRICT_MATCHING` env var, and a keyless `GET /health`.
+
 Flask server that bridges Easynews search to a Newznab-like API so you can add it to Prowlarr as a custom indexer and download NZBs. Video-only, sorts by relevance, returns as many results as possible, and filters files smaller than 100 MB.
 
 ## Setup (Local)
@@ -79,6 +84,7 @@ To tail logs from the detached container run `docker logs -f <container-id>`.
 
 ## Endpoints
 
+- Health (no API key): `GET /health` → `{"status":"ok"}`
 - Caps: `GET /api?t=caps&apikey=<key>`
 - Search (video-only): `GET /api?t=search&q=<query>&apikey=<key>&limit=<n>&minsize=<MB>`
 	- Default `limit=100`, `minsize=100` (MB)
