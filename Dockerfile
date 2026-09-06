@@ -13,4 +13,5 @@ COPY . .
 
 ENV PORT=8081
 
-CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT} --workers ${GUNICORN_WORKERS:-4} server:APP"]
+# GUNICORN_WORKERS must be a positive integer; anything else falls back to 4.
+CMD ["sh", "-c", "W=${GUNICORN_WORKERS:-4}; case \"$W\" in ''|0|*[!0-9]*) echo \"Ignoring GUNICORN_WORKERS='$W': not a positive integer, using 4\" >&2; W=4;; esac; exec gunicorn --bind 0.0.0.0:${PORT} --workers $W server:APP"]

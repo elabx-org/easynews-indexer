@@ -21,16 +21,30 @@ import requests
 from requests.exceptions import RequestException
 
 
-# Override with EASYNEWS_BASE_URL (e.g. a proxy or alternate Easynews host).
-EASYNEWS_BASE = (
-    os.environ.get("EASYNEWS_BASE_URL", "").strip() or "https://members.easynews.com"
-).rstrip("/")
+logger = logging.getLogger(__name__)
+
+_DEFAULT_BASE = "https://members.easynews.com"
+
+
+def _base_url_from_env() -> str:
+    """EASYNEWS_BASE_URL (e.g. a proxy or alternate host); must be http(s)."""
+    raw = os.environ.get("EASYNEWS_BASE_URL", "").strip().rstrip("/")
+    if not raw:
+        return _DEFAULT_BASE
+    if not raw.lower().startswith(("http://", "https://")):
+        logger.warning(
+            "Ignoring EASYNEWS_BASE_URL=%r: must start with http:// or https://, using %s",
+            raw, _DEFAULT_BASE,
+        )
+        return _DEFAULT_BASE
+    return raw
+
+
+EASYNEWS_BASE = _base_url_from_env()
 
 _LOGIN_TIMEOUT = 15
 _SEARCH_TIMEOUT = 30
 _DOWNLOAD_TIMEOUT = 60
-
-logger = logging.getLogger(__name__)
 
 
 class EasynewsError(Exception):

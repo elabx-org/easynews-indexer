@@ -50,7 +50,7 @@ It starts on `http://127.0.0.1:8081`.
 ## Configuration
 
 All settings are environment variables (a `.env` file in the working directory is also read; see `.env.example`).
-Invalid integer values are ignored with a warning and the default is used.
+Invalid values are ignored with a warning and the default is used.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -58,11 +58,11 @@ Invalid integer values are ignored with a warning and the default is used.
 | `EASYNEWS_PASS` | (required) | Easynews password |
 | `NEWZNAB_APIKEY` | `testkey` | API key Prowlarr/Newznab clients must send |
 | `PORT` | `8081` | Listen port |
-| `EASYNEWS_BASE_URL` | `https://members.easynews.com` | Easynews host used for login, search and NZB download; trailing slash stripped |
+| `EASYNEWS_BASE_URL` | `https://members.easynews.com` | Easynews host used for login, search and NZB download; must start with `http://` or `https://`; trailing slash stripped |
 | `DEFAULT_MIN_SIZE_MB` | `100` | Minimum file size in MB: the default when `?minsize=` is absent, and the floor for any `?minsize=` value |
-| `DEFAULT_LIMIT` | `100` | Results returned when `?limit=` is absent; also advertised as `max`/`default` in caps `<limits>` |
+| `DEFAULT_LIMIT` | `100` | Results returned when `?limit=` is absent and the hard maximum for `?limit=`; advertised as `max`/`default` in caps `<limits>`. Capped at 250, the number of results fetched from Easynews per search |
 | `STRICT_MATCHING` | `1` | Strict title matching for `t=movie` / `t=tvsearch` (`0` to disable) |
-| `GUNICORN_WORKERS` | `4` | Gunicorn worker processes (Docker image only) |
+| `GUNICORN_WORKERS` | `4` | Gunicorn worker processes (Docker image only); a non-positive or non-integer value falls back to 4 |
 
 ## Setup (Docker)
 
@@ -105,8 +105,9 @@ To tail logs from the detached container run `docker logs -f <container-id>`.
 
 - Health (no API key): `GET /health` → `{"status":"ok"}`
 - Caps: `GET /api?t=caps&apikey=<key>` (`<limits max/default>` reflects `DEFAULT_LIMIT`)
-- Search (video-only): `GET /api?t=search&q=<query>&apikey=<key>&limit=<n>&minsize=<MB>`
-	- Default `limit=DEFAULT_LIMIT`, `minsize=DEFAULT_MIN_SIZE_MB` (MB); `minsize` below `DEFAULT_MIN_SIZE_MB` is raised to it
+- Search (video-only): `GET /api?t=search&q=<query>&apikey=<key>&limit=<n>&offset=<n>&minsize=<MB>`
+	- Default `limit=DEFAULT_LIMIT`, `minsize=DEFAULT_MIN_SIZE_MB` (MB); `minsize` below `DEFAULT_MIN_SIZE_MB` is raised to it, `limit` above `DEFAULT_LIMIT` is lowered to it
+	- Blank or non-integer `limit`, `offset` and `minsize` values fall back to their defaults (`offset` defaults to 0)
 	- Also supports `t=movie` and `t=tvsearch`
 	- **Strict matching** is enabled by default for `t=movie` and `t=tvsearch` (requires title to contain all query words); disabled for plain `t=search`
 	- Optional `strict=0|1` overrides title matching strictness per request

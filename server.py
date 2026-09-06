@@ -1,5 +1,7 @@
 import base64
 import html
+import json
+import logging
 import os
 import re
 import threading
@@ -8,23 +10,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Set
 from urllib.parse import quote
 
-import logging
-
 import requests
 from flask import Flask, Response, request
-import json
-
-import easynews_client
-from easynews_client import EasynewsClient, EasynewsError, SearchItem
-
-
-logger = logging.getLogger(__name__)
-
-APP = Flask(__name__)
-_CLIENT: Optional[EasynewsClient] = None
-_CLIENT_LOCK = threading.Lock()
-_CLIENT_LOGIN_TTL = 600  # seconds
-_CLIENT_LAST_LOGIN: float = 0.0
 
 
 def _load_dotenv():
@@ -46,7 +33,20 @@ def _load_dotenv():
         pass
 
 
+# Must run before importing easynews_client: it reads EASYNEWS_BASE_URL at import.
 _load_dotenv()
+
+import easynews_client  # noqa: E402
+from easynews_client import EasynewsClient, EasynewsError, SearchItem  # noqa: E402
+
+
+logger = logging.getLogger(__name__)
+
+APP = Flask(__name__)
+_CLIENT: Optional[EasynewsClient] = None
+_CLIENT_LOCK = threading.Lock()
+_CLIENT_LOGIN_TTL = 600  # seconds
+_CLIENT_LAST_LOGIN: float = 0.0
 
 API_KEY = os.environ.get("NEWZNAB_APIKEY", "testkey")
 EZ_USER = os.environ.get("EASYNEWS_USER")
@@ -84,17 +84,42 @@ STRICT_MATCHING_DEFAULT = _env_bool("STRICT_MATCHING", True)
 # applied to any ?minsize= value (a request can never go below it).
 DEFAULT_MIN_SIZE_MB = _env_int("DEFAULT_MIN_SIZE_MB", 100)
 
-# Result count when ?limit= is absent; also advertised in caps <limits>.
+# Results requested from Easynews per search; nothing beyond this can be returned.
+UPSTREAM_PAGE_SIZE = 250
+
+# Result count when ?limit= is absent and the hard maximum for ?limit=; also
+# advertised as max/default in caps <limits>. Capped at UPSTREAM_PAGE_SIZE so
+# caps never promise more than a search can deliver.
 DEFAULT_LIMIT = _env_int("DEFAULT_LIMIT", 100, minimum=1)
+if DEFAULT_LIMIT > UPSTREAM_PAGE_SIZE:
+    logger.warning(
+        "DEFAULT_LIMIT=%d exceeds the %d results Easynews returns per search; using %d",
+        DEFAULT_LIMIT, UPSTREAM_PAGE_SIZE, UPSTREAM_PAGE_SIZE,
+    )
+    DEFAULT_LIMIT = UPSTREAM_PAGE_SIZE
+
+
+def _int_param(raw: Optional[str], default: int, minimum: int) -> int:
+    """Query-string integer; blank, unparseable or < minimum falls back to default."""
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return default
+    return value if value >= minimum else default
 
 
 def _resolve_min_size_mb(min_size_param: Optional[str]) -> int:
-    if not min_size_param:
-        return DEFAULT_MIN_SIZE_MB
-    try:
-        return max(DEFAULT_MIN_SIZE_MB, int(min_size_param))
-    except ValueError:
-        return DEFAULT_MIN_SIZE_MB
+    return _int_param(min_size_param, DEFAULT_MIN_SIZE_MB, minimum=DEFAULT_MIN_SIZE_MB)
+
+
+def _resolve_limit(limit_param: Optional[str]) -> int:
+    return min(_int_param(limit_param, DEFAULT_LIMIT, minimum=1), DEFAULT_LIMIT)
+
+
+def _resolve_offset(offset_param: Optional[str]) -> int:
+    return _int_param(offset_param, 0, minimum=0)
 
 
 def _strict_requested(t: str, strict_param: Optional[str]) -> bool:
@@ -807,8 +832,8 @@ def api():
             query_meta["episode"] = episode_int
         strict_requested = _strict_requested(t, request.args.get("strict"))
         strict_phrase = _sanitize_phrase(raw_query) if strict_requested else None
-        limit = int(request.args.get("limit", str(DEFAULT_LIMIT)))
-        offset = int(request.args.get("offset", "0"))
+        limit = _resolve_limit(request.args.get("limit"))
+        offset = _resolve_offset(request.args.get("offset"))
         min_bytes = _resolve_min_size_mb(request.args.get("minsize")) * 1024 * 1024
 
         if fallback_query:
@@ -873,7 +898,7 @@ def api():
             data = c.search(
                 query=q,
                 file_type="VIDEO",
-                per_page=250,
+                per_page=UPSTREAM_PAGE_SIZE,
                 sort_field="relevance",
                 sort_dir="-",
             )

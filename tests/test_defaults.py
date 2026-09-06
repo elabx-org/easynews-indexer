@@ -86,11 +86,18 @@ def _search(monkeypatch, items, **params):
     return resp.get_data(as_text=True)
 
 
-def _run_isolated(code, **env):
-    """Import a module in a fresh interpreter so import-time env parsing is real."""
-    full_env = {**os.environ, "EASYNEWS_USER": "test", "EASYNEWS_PASS": "test", **env}
+def _run_isolated(code, cwd=ROOT, **env):
+    """Import a module in a fresh interpreter so import-time env parsing is real.
+
+    A value of None removes the variable from the child's environment.
+    """
+    full_env = {
+        **os.environ, "PYTHONPATH": ROOT,
+        "EASYNEWS_USER": "test", "EASYNEWS_PASS": "test", **env,
+    }
+    full_env = {k: v for k, v in full_env.items() if v is not None}
     return subprocess.run(
-        [sys.executable, "-c", code], cwd=ROOT, env=full_env,
+        [sys.executable, "-c", code], cwd=cwd, env=full_env,
         capture_output=True, text=True,
     )
 
@@ -146,6 +153,31 @@ def test_base_url_defaults_to_members_easynews():
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "https://members.easynews.com"
+
+
+def test_base_url_from_dotenv_is_honoured(tmp_path):
+    # server imports easynews_client; the .env must be loaded before that import.
+    (tmp_path / ".env").write_text(
+        "EASYNEWS_BASE_URL=https://from-dotenv.test/\nDEFAULT_LIMIT=7\n"
+    )
+    result = _run_isolated(
+        "import server, easynews_client; "
+        "print(easynews_client.EASYNEWS_BASE, server.DEFAULT_LIMIT)",
+        cwd=str(tmp_path), EASYNEWS_BASE_URL=None, DEFAULT_LIMIT=None,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["https://from-dotenv.test", "7"]
+
+
+@pytest.mark.parametrize("raw", ["members.easynews.com", "ftp://x.test", "://nope"])
+def test_base_url_without_http_scheme_falls_back_to_default(raw):
+    result = _run_isolated(
+        "import easynews_client; print(easynews_client.EASYNEWS_BASE)",
+        EASYNEWS_BASE_URL=raw,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "https://members.easynews.com"
+    assert "EASYNEWS_BASE_URL" in result.stderr
 
 
 def test_client_search_url_uses_base_url(monkeypatch):
@@ -218,9 +250,74 @@ def test_caps_limits_reflect_default_limit(monkeypatch):
 
 
 def test_search_uses_default_limit_when_param_absent(monkeypatch):
-    monkeypatch.setattr(server, "DEFAULT_LIMIT", 2)
+    monkeypatch.setattr(server, "DEFAULT_LIMIT", 3)
     items = [_item(f"n{i}", 500) for i in range(5)]
     xml = _search(monkeypatch, items)
+    assert xml.count("<item>") == 3
+    xml = _search(monkeypatch, items, limit="2")
     assert xml.count("<item>") == 2
-    xml = _search(monkeypatch, items, limit="4")
-    assert xml.count("<item>") == 4
+
+
+def test_limit_param_is_capped_at_default_limit(monkeypatch):
+    # caps advertises max=DEFAULT_LIMIT, so a request can't exceed it.
+    monkeypatch.setattr(server, "DEFAULT_LIMIT", 3)
+    items = [_item(f"n{i}", 500) for i in range(5)]
+    xml = _search(monkeypatch, items, limit="1000")
+    assert xml.count("<item>") == 3
+
+
+@pytest.mark.parametrize("raw", ["", "abc", "0", "-1", "1.5"])
+def test_invalid_limit_param_falls_back_to_default(monkeypatch, raw):
+    monkeypatch.setattr(server, "DEFAULT_LIMIT", 2)
+    items = [_item(f"n{i}", 500) for i in range(5)]
+    xml = _search(monkeypatch, items, limit=raw)
+    assert xml.count("<item>") == 2
+
+
+@pytest.mark.parametrize("raw", ["", "abc", "-1"])
+def test_invalid_offset_param_falls_back_to_zero(monkeypatch, raw):
+    monkeypatch.setattr(server, "DEFAULT_LIMIT", 10)
+    items = [_item(f"n{i}", 500) for i in range(3)]
+    xml = _search(monkeypatch, items, offset=raw)
+    assert xml.count("<item>") == 3
+    xml = _search(monkeypatch, items, offset="1")
+    assert xml.count("<item>") == 2
+
+
+def test_default_limit_is_capped_at_upstream_page_size():
+    # Easynews is queried for at most UPSTREAM_PAGE_SIZE results, so caps
+    # must not advertise more than can ever be returned.
+    result = _run_isolated(
+        "import server; print(server.DEFAULT_LIMIT, server.UPSTREAM_PAGE_SIZE)",
+        DEFAULT_LIMIT="500",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["250", "250"]
+    assert "DEFAULT_LIMIT" in result.stderr
+
+
+# --- GUNICORN_WORKERS (Dockerfile CMD) ---------------------------------------------------
+
+def _docker_cmd():
+    import json
+    with open(os.path.join(ROOT, "Dockerfile")) as f:
+        for line in f:
+            if line.startswith("CMD "):
+                return json.loads(line[4:])
+    raise AssertionError("no CMD in Dockerfile")
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (None, "4"), ("", "4"), ("abc", "4"), ("0", "4"), ("-2", "4"), ("2", "2"), ("12", "12"),
+])
+def test_dockerfile_cmd_falls_back_on_invalid_worker_count(raw, expected):
+    cmd = _docker_cmd()
+    assert cmd[:2] == ["sh", "-c"]
+    # Run the real CMD shell snippet with gunicorn swapped for echo.
+    script = cmd[2].replace("gunicorn ", "echo ")
+    env = {"PATH": os.environ["PATH"], "PORT": "8081"}
+    if raw is not None:
+        env["GUNICORN_WORKERS"] = raw
+    result = subprocess.run(["sh", "-c", script], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert f"--workers {expected} " in result.stdout
