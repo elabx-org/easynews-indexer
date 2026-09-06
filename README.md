@@ -5,7 +5,8 @@
 > **elabx-org fork.** Maintained independently of upstream. Built and deployed by Komodo as
 > `ghcr.io/elabx-org/easynews-indexer`. Changes vs upstream: sample items carry explicit
 > categories (so Sonarr's add-time test passes through Prowlarr), context-aware anime
-> detection, a working `STRICT_MATCHING` env var, and a keyless `GET /health`.
+> detection, a working `STRICT_MATCHING` env var, a keyless `GET /health`, and a short-TTL
+> search-result cache (`CACHE_TTL_SECONDS`).
 
 Flask server that bridges Easynews search to a Newznab-like API so you can add it to Prowlarr as a custom indexer and download NZBs. Video-only, sorts by relevance, returns as many results as possible, and filters files smaller than 100 MB.
 
@@ -81,6 +82,35 @@ docker run --rm -d -p 8081:8081 ^
 ```
 
 To tail logs from the detached container run `docker logs -f <container-id>`.
+
+## Configuration
+
+All settings are environment variables (a `.env` file in the working directory is also read).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `EASYNEWS_USER` | (required) | Easynews username |
+| `EASYNEWS_PASS` | (required) | Easynews password |
+| `NEWZNAB_APIKEY` | `testkey` | API key Prowlarr must send (`apikey=` or `X-Api-Key`) |
+| `PORT` | `8081` | Listen port |
+| `STRICT_MATCHING` | `1` | Default title strictness for `t=movie` / `t=tvsearch` (per-request `strict=0|1` overrides) |
+| `CACHE_TTL_SECONDS` | `120` | Seconds to cache raw Easynews search responses; `0` disables caching |
+
+### Search cache
+
+Sonarr/Radarr (especially several instances behind one Prowlarr) tend to fire the
+same search repeatedly within minutes. Identical searches — same query, page,
+sort and page size as sent to Easynews — are served from an in-memory cache for
+`CACHE_TTL_SECONDS` and don't hit Easynews again. Notes:
+
+- Only real Easynews searches are cached. The empty-query / `q=test` sample
+  fallback and `t=get` NZB downloads are never cached.
+- Errors from Easynews are never cached; the next request retries.
+- Expired entries are refreshed, not served. The cache is bounded (256 entries,
+  oldest evicted).
+- The cache is **per process**. The Docker image runs gunicorn with 4 sync
+  workers, so each worker keeps its own cache and a repeated search may reach
+  Easynews up to 4 times before every worker is warm.
 
 ## Endpoints
 
