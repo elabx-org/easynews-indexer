@@ -21,7 +21,10 @@ import requests
 from requests.exceptions import RequestException
 
 
-EASYNEWS_BASE = "https://members.easynews.com"
+# Override with EASYNEWS_BASE_URL (e.g. a proxy or alternate Easynews host).
+EASYNEWS_BASE = (
+    os.environ.get("EASYNEWS_BASE_URL", "").strip() or "https://members.easynews.com"
+).rstrip("/")
 
 _LOGIN_TIMEOUT = 15
 _SEARCH_TIMEOUT = 30

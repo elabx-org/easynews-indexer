@@ -8,12 +8,17 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Set
 from urllib.parse import quote
 
+import logging
+
 import requests
 from flask import Flask, Response, request
 import json
 
+import easynews_client
 from easynews_client import EasynewsClient, EasynewsError, SearchItem
 
+
+logger = logging.getLogger(__name__)
 
 APP = Flask(__name__)
 _CLIENT: Optional[EasynewsClient] = None
@@ -55,9 +60,41 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    """Integer env var; unset, unparseable or < minimum falls back to default."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        logger.warning("Ignoring %s=%r: not an integer, using %d", name, raw, default)
+        return default
+    if value < minimum:
+        logger.warning("Ignoring %s=%d: below minimum %d, using %d", name, value, minimum, default)
+        return default
+    return value
+
+
 # Default strictness for t=movie / t=tvsearch (plain t=search is never strict
 # by default). Per-request ?strict=0|1 always wins.
 STRICT_MATCHING_DEFAULT = _env_bool("STRICT_MATCHING", True)
+
+# Minimum file size in MB: the default when ?minsize= is absent and the floor
+# applied to any ?minsize= value (a request can never go below it).
+DEFAULT_MIN_SIZE_MB = _env_int("DEFAULT_MIN_SIZE_MB", 100)
+
+# Result count when ?limit= is absent; also advertised in caps <limits>.
+DEFAULT_LIMIT = _env_int("DEFAULT_LIMIT", 100, minimum=1)
+
+
+def _resolve_min_size_mb(min_size_param: Optional[str]) -> int:
+    if not min_size_param:
+        return DEFAULT_MIN_SIZE_MB
+    try:
+        return max(DEFAULT_MIN_SIZE_MB, int(min_size_param))
+    except ValueError:
+        return DEFAULT_MIN_SIZE_MB
 
 
 def _strict_requested(t: str, strict_param: Optional[str]) -> bool:
@@ -685,7 +722,7 @@ def api():
             '<?xml version="1.0" encoding="UTF-8"?>'
             "<caps>"
             '<server version="0.1" title="Easynews Bridge"/>'
-            '<limits max="100" default="100"/>'
+            f'<limits max="{DEFAULT_LIMIT}" default="{DEFAULT_LIMIT}"/>'
             '<registration available="no" open="no"/>'
             "<searching>"
             '<search available="yes" supportedParams="q"/>'
@@ -770,16 +807,9 @@ def api():
             query_meta["episode"] = episode_int
         strict_requested = _strict_requested(t, request.args.get("strict"))
         strict_phrase = _sanitize_phrase(raw_query) if strict_requested else None
-        limit = int(request.args.get("limit", "100"))
+        limit = int(request.args.get("limit", str(DEFAULT_LIMIT)))
         offset = int(request.args.get("offset", "0"))
-        min_size_param = request.args.get("minsize")
-        min_size_mb = 100
-        if min_size_param:
-            try:
-                min_size_mb = max(100, int(min_size_param))
-            except ValueError:
-                min_size_mb = 100
-        min_bytes = min_size_mb * 1024 * 1024
+        min_bytes = _resolve_min_size_mb(request.args.get("minsize")) * 1024 * 1024
 
         if fallback_query:
             # Check if TV/Anime categories are requested
@@ -979,7 +1009,7 @@ def api():
             c = client()
             payload = c.build_nzb_payload([si], name=d.get("title"))
             # fetch content
-            url = "https://members.easynews.com/2.0/api/dl-nzb"
+            url = f"{easynews_client.EASYNEWS_BASE}/2.0/api/dl-nzb"
             r = c.s.post(url, data=payload, timeout=60)
         except EasynewsError as e:
             return Response(f"Upstream error: {e}", status=502)
