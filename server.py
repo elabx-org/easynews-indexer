@@ -6,8 +6,9 @@ import os
 import re
 import threading
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
 
 import requests
@@ -126,6 +127,69 @@ def _strict_requested(t: str, strict_param: Optional[str]) -> bool:
     if strict_param is not None:
         return strict_param.strip().lower() not in {"0", "false", "no", "off"}
     return STRICT_MATCHING_DEFAULT and t in {"movie", "tvsearch"}
+
+
+# --- Search-result cache -------------------------------------------------------
+#
+# Sonarr/Radarr (several instances, all via Prowlarr) fire the same search
+# repeatedly within minutes. Cache the raw Easynews search response for a short
+# TTL so identical searches don't trigger duplicate Easynews round trips.
+#
+# Keyed by the exact kwargs passed to EasynewsClient.search(). Only real
+# searches are cached: the empty-query sample fallback never reaches Easynews,
+# and t=get NZB downloads are never cached. Errors are never cached.
+#
+# The cache is per-process: gunicorn runs sync workers as separate processes,
+# so each of the N workers holds its own cache and a repeated search may hit
+# Easynews up to N times before every worker is warm. The lock only guards
+# the threads within one process.
+CACHE_TTL_SECONDS = _env_int("CACHE_TTL_SECONDS", 120, minimum=0)  # 0 disables
+SEARCH_CACHE_MAX_ENTRIES = 256
+
+_SearchCacheKey = Tuple[Tuple[str, Any], ...]
+_SEARCH_CACHE: "OrderedDict[_SearchCacheKey, Tuple[float, Dict[str, Any]]]" = OrderedDict()
+_SEARCH_CACHE_LOCK = threading.Lock()
+
+
+def _now() -> float:
+    # Indirection so tests can drive the clock without sleeping.
+    return time.time()
+
+
+def _search_cache_clear() -> None:
+    with _SEARCH_CACHE_LOCK:
+        _SEARCH_CACHE.clear()
+
+
+def _search_cache_size() -> int:
+    with _SEARCH_CACHE_LOCK:
+        return len(_SEARCH_CACHE)
+
+
+def _cached_search(**search_kwargs: Any) -> Dict[str, Any]:
+    """client().search(**search_kwargs), served from the TTL cache when fresh."""
+    ttl = CACHE_TTL_SECONDS
+    if ttl <= 0:
+        return client().search(**search_kwargs)
+
+    key: _SearchCacheKey = tuple(sorted(search_kwargs.items()))
+    now = _now()
+    with _SEARCH_CACHE_LOCK:
+        entry = _SEARCH_CACHE.get(key)
+        if entry is not None and now < entry[0]:
+            return entry[1]
+
+    # Miss or expired: fetch outside the lock so unrelated searches don't
+    # serialize behind one Easynews round trip. Exceptions propagate and
+    # leave the cache untouched, so the next request retries.
+    data = client().search(**search_kwargs)
+
+    with _SEARCH_CACHE_LOCK:
+        _SEARCH_CACHE.pop(key, None)
+        _SEARCH_CACHE[key] = (now + ttl, data)
+        while len(_SEARCH_CACHE) > SEARCH_CACHE_MAX_ENTRIES:
+            _SEARCH_CACHE.popitem(last=False)  # evict oldest insertion
+    return data
 
 
 def require_apikey() -> bool:
@@ -893,9 +957,8 @@ def api():
                     }
                 ]
         else:
-            c = client()
             # aim for maximum results per page
-            data = c.search(
+            data = _cached_search(
                 query=q,
                 file_type="VIDEO",
                 per_page=UPSTREAM_PAGE_SIZE,
