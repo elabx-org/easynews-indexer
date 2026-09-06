@@ -3,6 +3,7 @@
 No network: the Easynews client is swapped for a fake only where a request
 would otherwise go out; everything else is the real code.
 """
+import json
 import os
 import subprocess
 import sys
@@ -34,6 +35,10 @@ class FakeResponse:
 
     def json(self):
         return self._payload
+
+    @property
+    def text(self):
+        return json.dumps(self._payload)
 
 
 class FakeSession:
