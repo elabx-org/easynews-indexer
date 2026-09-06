@@ -203,38 +203,24 @@ _SEASON_EP_RE = re.compile(
 # Anime detection patterns
 _ANIME_BRACKET_GROUP_RE = re.compile(r"^\[([^\]]+)\]", re.IGNORECASE)
 
-# Known fansub groups for anime detection
-_KNOWN_FANSUB_GROUPS = {
-    "subsplease",
-    "erai-raws",
-    "horriblesubs",
-    "judas",
-    "gjm",
-    "commiesubs",
-    "commie",
-    "animekaizoku",
-    "anime time",
-    "asenshi",
-    "damedesuyo",
-    "gg",
-    "fff",
-    "underwater",
-    "ember",
-    "kametsu",
-    "kawaiika",
-    "mezashite",
-    "reinforce",
-    "senritsu",
-    "vivid",
-    "coalgirls",
-    "utw",
-    "thora",
-    "ohys-raws",
-    "leopard-raws",
-    "asw",
-    "mtbb",
-    "anime-time",
+# Bracketed prefixes that are release tags or broadcasters, not fansub groups.
+# Any other [Group] prefix followed by an episode number is treated as anime.
+_NON_FANSUB_BRACKET_TAGS = {
+    "bbc", "pbs", "itv", "hbo", "amzn", "nf", "dsnp", "atvp",
+    "repack", "proper", "real", "rerip", "internal", "readnfo",
+    "4k", "uhd", "hdr", "hdr10", "dv", "dubbed", "subbed", "multi",
+    "2160p", "1080p", "720p", "480p", "x264", "x265", "hevc", "h264", "h265",
 }
+# Episode number after the group: "- 01", "- 1165", "- 01v2", "Ep 01", "Episode 1045"
+_ANIME_EPISODE_RES = [
+    re.compile(r"[\s\-_]+\d{1,4}(?:\s*v\d+)?(?=[\s\-_\.\(\[]|$)", re.IGNORECASE),
+    re.compile(r"[\s\-_]Ep?\.?\s*\d{1,4}(?=\D|$)", re.IGNORECASE),
+    re.compile(r"[\s\-_]Episode\s*\d{1,4}(?=\D|$)", re.IGNORECASE),
+]
+# Bare absolute-episode title with no group: "One Piece 485", "One Piece - 582"
+_BARE_ABSOLUTE_EPISODE_RE = re.compile(
+    r"^[A-Za-z][^\[\]]*?[\s\-_]+(?P<ep>\d{1,4})(?:v\d+)?(?=[\s\-_\.\(\[]|$)", re.IGNORECASE
+)
 _SANITIZE_SYMBOLS_RE = re.compile(r"[\.\-_:\s]+")
 _NON_ALNUM_RE = re.compile(r"[^\w\sÀ-ÿ]")
 
@@ -397,51 +383,43 @@ def _extract_release_markers(
     return info
 
 
-def _detect_anime(title: str) -> bool:
+def _detect_anime(title: str, anime_hint: bool = False) -> bool:
     """
-    Detect anime releases using fansub indicators.
+    Detect anime releases.
 
-    Requirements (all must be true):
-    1. Bracketed release group at start: [Group]
-    2. Group must be in known fansub whitelist
-    3. Episode-only numbering (- 01, Ep 01, Episode 01)
-    4. NO traditional TV patterns (S01E01, 1x02)
+    Always anime: "[Group] Title - NN" where [Group] is not a known release
+    tag/broadcaster and NN is an episode number.
 
-    Returns: True if anime, False otherwise
+    Only when the request asked for the anime category (anime_hint): bare
+    absolute-episode titles such as "One Piece 485" / "One Piece - 582".
+    Radarr never asks for 5070, so movie searches are unaffected.
+
+    Never anime: titles with SxxEyy / NxNN patterns (those are TV), or where
+    the trailing number is a year.
     """
-    # Guard: Exclude if traditional TV patterns exist
     if _SEASON_EP_RE.search(title):
         return False
 
     bracket_match = _ANIME_BRACKET_GROUP_RE.search(title)
-    if not bracket_match:
+    if bracket_match:
+        group_name = bracket_match.group(1).strip().lower()
+        if group_name in _NON_FANSUB_BRACKET_TAGS:
+            return False
+        rest = title[bracket_match.end() :].strip()
+        return any(rx.search(rest) for rx in _ANIME_EPISODE_RES)
+
+    if not anime_hint:
         return False
 
-    # This prevents [BBC], [PBS], [REPACK] from being detected as anime
-    group_name = bracket_match.group(1).strip().lower()
-    if group_name not in _KNOWN_FANSUB_GROUPS:
+    m = _BARE_ABSOLUTE_EPISODE_RE.match(title.strip())
+    if not m:
         return False
-
-    # Remove bracketed group to avoid false matches
-    title_without_group = title[bracket_match.end() :].strip()
-
-    # Episode patterns: "- 01", "Ep 01", "Episode 01", "- 01v2", "-1090."
-    # Support up to 4 digits for long-running anime (e.g., One Piece episode 1045)
-    episode_patterns = [
-        r"[\s\-_]+\d{1,4}(?:\s*v\d+)?[\s\-_\.\(\[]",  # " - 1090 " or "-1045." or "- 01v2 -"
-        r"[\s\-_]Ep?\.?\s*\d{1,4}",  # "- Ep01" or " E1045"
-        r"[\s\-_]Episode\s*\d{1,4}",  # "- Episode 01" or "- Episode 1045"
-    ]
-
-    has_episode = any(
-        re.search(pattern, title_without_group, re.IGNORECASE)
-        for pattern in episode_patterns
-    )
-
-    return has_episode
+    return not _YEAR_RE.fullmatch(m.group("ep"))
 
 
-def _detect_category(title: str, metadata: Dict[str, Optional[Any]]) -> int:
+def _detect_category(
+    title: str, metadata: Dict[str, Optional[Any]], anime_hint: bool = False
+) -> int:
     """
     Detect Newznab category based on filename and extracted metadata.
 
@@ -460,7 +438,7 @@ def _detect_category(title: str, metadata: Dict[str, Optional[Any]]) -> int:
         Newznab category ID (int)
     """
     # Check for anime FIRST (priority detection)
-    if _detect_anime(title):
+    if _detect_anime(title, anime_hint=anime_hint):
         return CATEGORY_ANIME  # 5070 - No quality subcategories
 
     season = metadata.get("season")
@@ -709,6 +687,8 @@ def api():
     if t in ("search", "movie", "tvsearch"):
         base_query = (request.args.get("q") or "").strip()
         cat_param = request.args.get("cat") or ""
+        # Sonarr requests always include 5070; Radarr requests never do.
+        anime_hint = "5070" in {c.strip() for c in cat_param.split(",") if c.strip()}
         season_param = request.args.get("season") or request.args.get("seasonnum")
         episode_param = (
             request.args.get("ep")
@@ -907,7 +887,9 @@ def api():
                 "year": year,
                 "quality": quality,
             }
-            category_id = it.get("category") or _detect_category(title_text, title_metadata)
+            category_id = it.get("category") or _detect_category(
+                title_text, title_metadata, anime_hint=anime_hint
+            )
 
             attr_parts = [
                 f'<newznab:attr name="size" value="{size}"/>',
