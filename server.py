@@ -341,7 +341,7 @@ _TOKEN_SPLIT_RE = re.compile(r"[^\w]+", re.UNICODE)
 _QUALITY_RE = re.compile(r"(2160|1440|1080|720|480|360)\s*(p|i)?", re.IGNORECASE)
 _YEAR_RE = re.compile(r"(19|20)\d{2}")
 _SEASON_EP_RE = re.compile(
-    r"(?:s(?P<season>\d{1,2})e(?P<episode>\d{1,2})|(?<!\d)(?P<season2>\d{1,2})x(?P<episode2>\d{1,2})(?!\d))",
+    r"(?:s(?P<season>\d{1,2})[._ -]?e(?P<episode>\d{1,4})(?!\d)|(?<!\d)(?P<season2>\d{1,2})x(?P<episode2>\d{1,2})(?!\d))",
     re.IGNORECASE,
 )
 # Anime detection patterns
@@ -355,16 +355,34 @@ _NON_FANSUB_BRACKET_TAGS = {
     "4k", "uhd", "hdr", "hdr10", "dv", "dubbed", "subbed", "multi",
     "2160p", "1080p", "720p", "480p", "x264", "x265", "hevc", "h264", "h265",
 }
-# Episode number after the group: "- 01", "- 1165", "- 01v2", "Ep 01", "Episode 1045"
-_ANIME_EPISODE_RES = [
-    re.compile(r"[\s\-_]+\d{1,4}(?:\s*v\d+)?(?=[\s\-_\.\(\[]|$)", re.IGNORECASE),
-    re.compile(r"[\s\-_]Ep?\.?\s*\d{1,4}(?=\D|$)", re.IGNORECASE),
-    re.compile(r"[\s\-_]Episode\s*\d{1,4}(?=\D|$)", re.IGNORECASE),
-]
-# Bare absolute-episode title with no group: "One Piece 485", "One Piece - 582"
-_BARE_ABSOLUTE_EPISODE_RE = re.compile(
-    r"^[A-Za-z][^\[\]]*?[\s\-_]+(?P<ep>\d{1,4})(?:v\d+)?(?=[\s\-_\.\(\[]|$)", re.IGNORECASE
+# Episode-number candidates. Names are usually dotted ("One.Piece.1176.[1080p]"),
+# sometimes spaced ("[Judas] One Piece - 1165"), and absolute episodes may be
+# prefixed ("EP1177", "e0083", "Episode 1045").
+_EP_CANDIDATE_RE = re.compile(
+    r"(?:^|[\s._-])(?P<prefix>(?:ep|e|episode)\.?\s*)?(?P<ep>\d{1,4})(?:v\d)?(?P<after>$|[\s._-].*)",
+    re.IGNORECASE,
 )
+_EP_FOLLOWED_BY_RE = re.compile(
+    r"^(?:[\s._-]+(?:\[|\(|\d{3,4}[pi](?![a-z0-9]))|\.(?:mkv|mp4|avi|ts|m4v|webm)$|$)",
+    re.IGNORECASE,
+)
+
+
+def _has_absolute_episode(text: str) -> bool:
+    """A 1-4 digit number (not a year) that reads as an absolute episode:
+    "EP1177"/"e0083"/"Episode 12" anywhere, or a bare number that ends the
+    name or is followed by a bracket/paren tag or a resolution token."""
+    for m in _EP_CANDIDATE_RE.finditer(text):
+        ep = m.group("ep")
+        if _YEAR_RE.fullmatch(ep):
+            continue
+        if m.group("prefix"):
+            return True
+        if _EP_FOLLOWED_BY_RE.match(m.group("after")):
+            return True
+    return False
+
+
 _SANITIZE_SYMBOLS_RE = re.compile(r"[\.\-_:\s]+")
 _NON_ALNUM_RE = re.compile(r"[^\w\sÀ-ÿ]")
 
@@ -547,15 +565,15 @@ def _detect_anime(title: str, anime_hint: bool = False) -> bool:
     """
     Detect anime releases.
 
-    Always anime: "[Group] Title - NN" where [Group] is not a known release
-    tag/broadcaster and NN is an episode number.
+    Always anime: "[Group] Title NN" / "[Group].Title.NN.[tags]" where [Group]
+    is not a known release tag/broadcaster and NN reads as an episode number.
 
     Only when the request asked for the anime category (anime_hint): bare
-    absolute-episode titles such as "One Piece 485" / "One Piece - 582".
+    absolute-episode titles such as "One.Piece.485.mkv" or "One.Piece.EP1177".
     Radarr never asks for 5070, so movie searches are unaffected.
 
     Never anime: titles with SxxEyy / NxNN patterns (those are TV), or where
-    the trailing number is a year.
+    the only number is a year.
     """
     if _SEASON_EP_RE.search(title):
         return False
@@ -566,15 +584,14 @@ def _detect_anime(title: str, anime_hint: bool = False) -> bool:
         if group_name in _NON_FANSUB_BRACKET_TAGS:
             return False
         rest = title[bracket_match.end() :].strip()
-        return any(rx.search(rest) for rx in _ANIME_EPISODE_RES)
+        return _has_absolute_episode(rest)
 
     if not anime_hint:
         return False
-
-    m = _BARE_ABSOLUTE_EPISODE_RE.match(title.strip())
-    if not m:
+    stripped = title.strip()
+    if not stripped or not stripped[0].isalpha():
         return False
-    return not _YEAR_RE.fullmatch(m.group("ep"))
+    return _has_absolute_episode(stripped)
 
 
 def _detect_category(

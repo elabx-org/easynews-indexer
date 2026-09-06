@@ -66,3 +66,39 @@ def test_sxxeyy_titles_stay_tv_even_with_anime_hint():
 
 def test_sxxeyy_hd_title_stays_tv_hd():
     assert cat("the.bear.s03e01.1080p.webrip.x264-avtomat.mkv") == server.CATEGORY_TV_HD
+
+
+# --- dotted release names (what the 3.0 API and most scene posts look like) --------
+
+@pytest.mark.parametrize("title", [
+    "[Sick-Fansubs].One.Piece.1176.[1080p][1DBD9AB7].mp4",
+    "[HatSubs].One.Piece.1012.(BD.1080p.10-bit.Opus).[551F705F].mkv",
+    "[Feibanyama].One.Piece.EP1160.[IQIYI.WebRip.2160p.HEVC.AAC.Multi-Subs].mkv",
+])
+def test_dotted_fansub_group_titles_are_anime_without_hint(title):
+    assert cat(title) == server.CATEGORY_ANIME
+
+
+@pytest.mark.parametrize("title", [
+    "One.Piece.485.mkv",
+    "One.Piece.EP1177.1080p.TVER.WEB-DL.JPN.AAC2.0.H.264-ToonsHub.mkv",
+    "one.piece.e1177.subfrench.1080p.web.x264-amb3r.mkv",
+    "one.piece.e0083.remastered.multi.1080p.web.h264-d4kid.mkv",
+    "One.Piece.EP1177.Episode.1177.1080p.CR.WEB-DL.JPN.AAC2.0.H.264.ESub-ToonsHub.mkv",
+])
+def test_dotted_bare_absolute_episode_is_anime_when_anime_requested(title):
+    assert cat(title, anime_hint=True) == server.CATEGORY_ANIME
+
+
+@pytest.mark.parametrize("title", [
+    "The.Matrix.1999.1080p.BluRay.x264-GRP.mkv",
+    "Alien.Romulus.2024.2160p.WEB-DL.DDP5.1.Atmos.H.265-FLUX.mkv",
+    "Movie.Title.2.2019.1080p.WEB.H264-GRP.mkv",
+    "Some.Documentary.1080p.WEB.H.264-GRP.mkv",
+])
+def test_dotted_movie_names_are_not_anime_even_with_hint(title):
+    assert cat(title, anime_hint=True) != server.CATEGORY_ANIME
+
+
+def test_dotted_season_episode_with_separator_is_tv():
+    assert cat("@AnimesHunt-Solo.Leveling.S02.E02.[1080p].MULTI.~.VyxoR.mkv", anime_hint=True) == server.CATEGORY_TV_HD

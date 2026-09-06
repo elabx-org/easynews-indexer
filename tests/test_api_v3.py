@@ -63,12 +63,12 @@ def qs(url):
 
 # --- endpoint selection ---------------------------------------------------------
 
-def test_default_api_version_is_2(monkeypatch):
+def test_default_api_version_is_3(monkeypatch):
     monkeypatch.delenv("EASYNEWS_API_VERSION", raising=False)
-    assert easynews_client._api_version_from_env() == "2.0"
+    assert easynews_client._api_version_from_env() == "3.0"
 
 
-@pytest.mark.parametrize("raw,expected", [("2.0", "2.0"), ("3.0", "3.0"), ("bogus", "2.0"), ("", "2.0")])
+@pytest.mark.parametrize("raw,expected", [("2.0", "2.0"), ("3.0", "3.0"), ("bogus", "3.0"), ("", "3.0")])
 def test_api_version_env_parsing(monkeypatch, raw, expected):
     monkeypatch.setenv("EASYNEWS_API_VERSION", raw)
     assert easynews_client._api_version_from_env() == expected
@@ -82,9 +82,20 @@ def test_v3_search_url_and_params():
     u = s.urls[0]
     assert urlparse(u).path == "/3.0/api/search"
     q = qs(u)
-    assert q["gps"] == "lanterns s01e01" and q["pno"] == "1" and q["s1"] == "relevance" and q["s1d"] == "-"
+    assert q["gps"] == "lanterns s01e01" and q["pno"] == "1"
     assert q["fty[]"] == "VIDEO" and q["u"] == "1" and q["safeO"] == "0"
     assert "pby" not in q and "fly" not in q
+    # 3.0 ranks by relevance only when NO sort is sent; s1=relevance makes it
+    # fall back to filename order (measured: 3/100 title matches vs 31/100).
+    assert "s1" not in q and "s1d" not in q
+
+
+def test_v3_sends_explicit_non_relevance_sort():
+    s = FakeSession(lambda url: page_of(3, 1))
+    c = easynews_client.EasynewsClient("u", "p", session=s, api_version="3.0")
+    c.search(query="x", per_page=100, sort_field="dtime", sort_dir="-")
+    q = qs(s.urls[0])
+    assert q["s1"] == "dtime" and q["s1d"] == "-"
 
 
 def test_v2_search_url_still_available():

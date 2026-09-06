@@ -51,16 +51,14 @@ _V3_PAGE_SIZE = 100
 
 
 def _api_version_from_env() -> str:
-    """EASYNEWS_API_VERSION: "2.0" (default) or "3.0"; anything else -> 2.0.
+    """EASYNEWS_API_VERSION: "3.0" (default) or "2.0"; anything else -> 3.0.
 
-    2.0 is the default because its relevance ranking is far better for
-    title-based searches: measured on the same queries, 3.0 returned
-    "One Piece" results with 0 anime-classified titles in the first 300 (2.0:
-    231/250) and only 17 title matches for "the bear s03e01" (2.0: 98). 3.0
-    appears to ignore the s1=relevance sort.
+    3.0 is preferred: with no sort parameter it ranks by relevance as well as
+    2.0 does, returns richer per-file metadata, and allows ~10 concurrent
+    searches per account instead of 2. Do NOT send s1=relevance to it.
     """
     raw = (os.environ.get("EASYNEWS_API_VERSION") or "").strip()
-    return raw if raw in ("2.0", "3.0") else "2.0"
+    return raw if raw in ("2.0", "3.0") else "3.0"
 
 
 def _max_concurrent_from_env() -> int:
@@ -167,10 +165,9 @@ class EasynewsClient:
     ) -> Dict[str, Any]:
         """Search Easynews; returns the raw JSON dict (data + pagination fields).
 
-        Uses the 2.0 Solr endpoint by default (best relevance ranking).
-        EASYNEWS_API_VERSION=3.0 selects the newer API (fixed 100 items/page,
-        so per_page > 100 fetches and merges several pages; richer fields but
-        poor ranking). Every request goes through the account-wide
+        Uses the 3.0 API by default (fixed 100 items/page, so per_page > 100
+        fetches and merges several pages). EASYNEWS_API_VERSION=2.0 selects the
+        legacy Solr endpoint. Every request goes through the account-wide
         concurrency semaphore.
         """
         if self.api_version == "3.0":
@@ -202,7 +199,9 @@ class EasynewsClient:
                 "safeO": str(safe_off),
                 "fty[]": file_type,
             }
-            if sort_field:
+            # 3.0 ranks by relevance only when no sort is sent; passing
+            # s1=relevance makes it fall back to filename order.
+            if sort_field and sort_field != "relevance":
                 params["s1"] = sort_field
                 params["s1d"] = sort_dir
             url = f"{EASYNEWS_BASE}/3.0/api/search"
