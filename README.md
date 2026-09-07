@@ -8,7 +8,7 @@
 > detection, a working `STRICT_MATCHING` env var, a keyless `GET /health`, a short-TTL
 > search-result cache (`CACHE_TTL_SECONDS`), and configurable defaults (`EASYNEWS_BASE_URL`,
 > `DEFAULT_MIN_SIZE_MB`, `DEFAULT_LIMIT`, `GUNICORN_WORKERS`), the Easynews 3.0 search API
-> with an account-wide concurrency cap, and sample-clip filtering.
+> with an account-wide concurrency cap, sample-clip filtering, and an optional anime-only mode.
 
 Flask server that bridges Easynews search to a Newznab-like API so you can add it to Prowlarr as a custom indexer and download NZBs. Video-only, sorts by relevance, returns as many results as possible, and filters files smaller than `DEFAULT_MIN_SIZE_MB` (100 MB by default).
 
@@ -117,6 +117,7 @@ All settings are environment variables (a `.env` file in the working directory i
 | `NEWZNAB_APIKEY` | `testkey` | API key Prowlarr must send (`apikey=` or `X-Api-Key`) |
 | `PORT` | `8081` | Listen port |
 | `STRICT_MATCHING` | `1` | Default title strictness for `t=movie` / `t=tvsearch` (per-request `strict=0|1` overrides) |
+| `ANIME_ONLY` | `0` | Advertise only the anime category (5070) in caps and return only anime results, so Prowlarr maps the indexer to anime categories and FusionHA/Sonarr query it for anime only, with no application tags. Includes fansub releases that use `SxxEyy` numbering. |
 | `CACHE_TTL_SECONDS` | `120` | Seconds to cache raw Easynews search responses; `0` disables caching |
 
 ### Search cache
