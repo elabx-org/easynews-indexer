@@ -82,6 +82,9 @@ def _env_int(name: str, default: int, minimum: int = 0) -> int:
 # (see pivot.py). Bounded per search by PIVOT_BUDGET_SECONDS; results are
 # cached per sample so repeated arr searches do not rescan.
 SIBLING_PIVOT = _env_bool("SIBLING_PIVOT", True)
+# Anime-only: advertise and return only anime, so Prowlarr/FusionHA scope this
+# indexer to anime automatically (no application tags needed).
+ANIME_ONLY = _env_bool("ANIME_ONLY", False)
 PIVOT_BUDGET_SECONDS = _env_int("PIVOT_BUDGET_SECONDS", 20, minimum=0)
 PIVOT_CACHE_TTL_SECONDS = _env_int("PIVOT_CACHE_TTL_SECONDS", 6 * 3600, minimum=60)
 PIVOT_SEED_MIN_BYTES = 5 * 1024 * 1024
@@ -642,6 +645,22 @@ def _extract_release_markers(
     return info
 
 
+def _looks_like_fansub(title: str) -> bool:
+    """A bracketed group prefix that is a fansub group, not a release tag or
+    broadcaster. True for "[SubsPlease] ...", false for "[BBC] ..."/"[REPACK] ..."."""
+    m = _ANIME_BRACKET_GROUP_RE.search(title)
+    if not m:
+        return False
+    return m.group(1).strip().lower() not in _NON_FANSUB_BRACKET_TAGS
+
+
+def _is_anime_release(title: str) -> bool:
+    """Broader than _detect_category==5070: also treats fansub-group releases
+    that use SxxEyy numbering (e.g. "[SubsPlease] Dandadan S02E01") as anime.
+    Used only to gate ANIME_ONLY mode."""
+    return _looks_like_fansub(title) or _detect_anime(title, anime_hint=True)
+
+
 def _detect_anime(title: str, anime_hint: bool = False) -> bool:
     """
     Detect anime releases.
@@ -958,29 +977,45 @@ def api():
 
     t = request.args.get("t", "caps")
     if t == "caps":
+        if ANIME_ONLY:
+            searching = (
+                "<searching>"
+                '<search available="yes" supportedParams="q"/>'
+                '<tv-search available="yes" supportedParams="q,season,ep"/>'
+                "</searching>"
+            )
+            # Only the anime category, and no generic TV parent, so Prowlarr maps
+            # this indexer to animeCategories only (never tv/movie categories).
+            categories = '<categories><category id="5070" name="Anime"/></categories>'
+        else:
+            searching = (
+                "<searching>"
+                '<search available="yes" supportedParams="q"/>'
+                '<movie-search available="yes" supportedParams="q,year"/>'
+                '<tv-search available="yes" supportedParams="q,season,ep"/>'
+                "</searching>"
+            )
+            categories = (
+                "<categories>"
+                '<category id="2000" name="Movies">'
+                '<subcat id="2030" name="Movies/HD"/>'
+                '<subcat id="2040" name="Movies/UHD"/>'
+                "</category>"
+                '<category id="5000" name="TV">'
+                '<subcat id="5030" name="TV/HD"/>'
+                '<subcat id="5040" name="TV/UHD"/>'
+                '<subcat id="5070" name="TV/Anime"/>'
+                "</category>"
+                '<category id="7000" name="Other"/>'
+                "</categories>"
+            )
         xml = (
             '<?xml version="1.0" encoding="UTF-8"?>'
             "<caps>"
             '<server version="0.1" title="Easynews Bridge"/>'
             f'<limits max="{DEFAULT_LIMIT}" default="{DEFAULT_LIMIT}"/>'
             '<registration available="no" open="no"/>'
-            "<searching>"
-            '<search available="yes" supportedParams="q"/>'
-            '<movie-search available="yes" supportedParams="q,year"/>'
-            '<tv-search available="yes" supportedParams="q,season,ep"/>'
-            "</searching>"
-            "<categories>"
-            '<category id="2000" name="Movies">'
-            '<subcat id="2030" name="Movies/HD"/>'
-            '<subcat id="2040" name="Movies/UHD"/>'
-            "</category>"
-            '<category id="5000" name="TV">'
-            '<subcat id="5030" name="TV/HD"/>'
-            '<subcat id="5040" name="TV/UHD"/>'
-            '<subcat id="5070" name="TV/Anime"/>'
-            "</category>"
-            '<category id="7000" name="Other"/>'
-            "</categories>"
+            f"{searching}{categories}"
             "</caps>"
         )
         return Response(xml, mimetype="application/xml")
@@ -989,7 +1024,7 @@ def api():
         base_query = (request.args.get("q") or "").strip()
         cat_param = request.args.get("cat") or ""
         # Sonarr requests always include 5070; Radarr requests never do.
-        anime_hint = "5070" in {c.strip() for c in cat_param.split(",") if c.strip()}
+        anime_hint = ANIME_ONLY or "5070" in {c.strip() for c in cat_param.split(",") if c.strip()}
         season_param = request.args.get("season") or request.args.get("seasonnum")
         episode_param = (
             request.args.get("ep")
@@ -1056,8 +1091,8 @@ def api():
             tv_categories = {"5000", "5030", "5040"}
             anime_categories = {"5070"}
             requested_categories = set(cat_param.split(",")) if cat_param else set()
-            wants_tv = t == "tvsearch" or bool(requested_categories & tv_categories)
-            wants_anime = bool(requested_categories & anime_categories) and not wants_tv
+            wants_tv = (t == "tvsearch" or bool(requested_categories & tv_categories)) and not ANIME_ONLY
+            wants_anime = ANIME_ONLY or (bool(requested_categories & anime_categories) and not wants_tv)
 
             if wants_anime:
                 # Anime-appropriate fallback
@@ -1146,6 +1181,15 @@ def api():
                                     items.append(extra)
                     except Exception:
                         logger.warning("sibling pivot failed; returning direct results only", exc_info=True)
+
+        if ANIME_ONLY:
+            anime_items = []
+            for it in items:
+                title = it.get("title", "")
+                if it.get("category") == CATEGORY_ANIME or _is_anime_release(title):
+                    it["category"] = CATEGORY_ANIME  # caps advertise only 5070
+                    anime_items.append(it)
+            items = anime_items
 
         # Trim by limit (handles fallback and real queries)
         items = items[offset : offset + limit]
